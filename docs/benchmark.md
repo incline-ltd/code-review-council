@@ -12,10 +12,12 @@ than one agent, and how much recall does it give up?
 [AACR-Bench](https://github.com/alibaba/aacr-bench) from Alibaba
 ([paper](https://arxiv.org/abs/2601.19494),
 [data](https://huggingface.co/datasets/Alibaba-Aone/aacr-bench), Apache-2.0):
-200 pull requests from 50 open-source projects in 10 languages, with 1,505
-expert-verified review comments. It is the benchmark that
+200 pull requests from 50 open-source projects in 10 languages, with repository context
+and expert-reviewed comments. Pin a dataset revision and record its exact
+comment count before evaluation. It is the benchmark that
 [open-code-review](https://github.com/alibaba/open-code-review) reports
-against, so results are directly comparable.
+against. Published numbers are only comparable when dataset, model, prompts
+and judge settings match.
 
 ## Method
 
@@ -28,7 +30,7 @@ and change nothing else: same data, same matching, same judge.
 | A | Claude Code alone |
 | B | Codex alone |
 | C | Council: Claude Code + Codex |
-| D | Council: Claude Code + Codex + Gemini CLI |
+
 
 open-code-review is compared through a rerun with the same model where
 possible, otherwise through its published numbers, labeled as such.
@@ -49,7 +51,7 @@ pull request.
 
 ## Cost
 
-Reviews run through each agent CLI's existing login, so they count against
-those plans' usage limits. The pipeline's semantic judge calls a model API,
+Reviews use each CLI's existing authentication. Subscription logins count
+against plan allowance; API/provider credentials can incur usage charges. The pipeline's semantic judge calls a model API,
 which is billed separately. Line-level metrics can be computed first without
 the judge.

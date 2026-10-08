@@ -1,4 +1,4 @@
-import { diffStats, isAnchored, normalizePath, renderDiff } from "./diff.js";
+import { diffStats, findDiffFile, isAnchored, normalizePath, renderDiff } from "./diff.js";
 import {
   FINDINGS_SCHEMA,
   REVIEW_INSTRUCTION,
@@ -10,7 +10,6 @@ import {
 } from "./prompts.js";
 import { runAgent as defaultRunAgent } from "./agents.js";
 
-const NEARBY_LINES = 2;
 const MAX_FINDINGS_PER_REVIEWER = 10;
 
 const rank = (severity) => SEVERITIES.indexOf(severity);
@@ -28,9 +27,11 @@ export function seatReviewers(agents) {
 
 function cleanFinding(raw, reviewer) {
   if (!raw || typeof raw !== "object") return null;
-  const line = Number(raw.line);
+  const line = raw.line;
   const severity = String(raw.severity || "").toLowerCase();
-  if (!raw.file || !Number.isInteger(line) || !SEVERITIES.includes(severity) || !raw.title) return null;
+  if (typeof raw.file !== "string" || !raw.file || !Number.isInteger(line) || line < 1 ||
+      !SEVERITIES.includes(severity) || typeof raw.title !== "string" || !raw.title.trim() ||
+      typeof raw.explanation !== "string" || !raw.explanation.trim()) return null;
   return {
     reviewer,
     file: normalizePath(raw.file),
@@ -42,18 +43,15 @@ function cleanFinding(raw, reviewer) {
 }
 
 /**
- * Group findings from different reviewers that point at the same place.
+ * Group only identical claims from different reviewers. Location proximity
+ * does not establish agreement: differently worded claims need cross-votes.
  * Two findings from the same reviewer are never merged.
  */
 export function clusterFindings(findings) {
   const clusters = [];
   for (const f of findings) {
-    let best = null;
-    for (const c of clusters) {
-      if (c.file !== f.file || c.authors.has(f.reviewer)) continue;
-      const distance = Math.abs(c.line - f.line);
-      if (distance <= NEARBY_LINES && (!best || distance < Math.abs(best.line - f.line))) best = c;
-    }
+    const best = clusters.find((c) => c.file === f.file && c.line === f.line &&
+      !c.authors.has(f.reviewer) && c.title === f.title && c.explanation === f.explanation);
     if (best) {
       best.findings.push(f);
       best.authors.add(f.reviewer);
@@ -97,6 +95,7 @@ export async function runCouncil({
   minVotes = 2,
   cwd,
   timeoutMs = 600_000,
+  signal,
   runAgent = defaultRunAgent,
   onProgress = () => {},
 }) {
@@ -107,21 +106,28 @@ export async function runCouncil({
   // Stage 1: independent reviews in parallel.
   const reviews = await Promise.all(
     seats.map(async (seat) => {
-      onProgress(`${seat.id}: reviewing`);
       try {
+        if (signal?.aborted) throw new Error("interrupted");
+        onProgress(`${seat.id}: reviewing`);
+        if (signal?.aborted) throw new Error("interrupted");
         const { data, ms } = await runAgent(seat.agent, {
           instruction: REVIEW_INSTRUCTION,
           input: reviewPrompt(rendered),
           schema: FINDINGS_SCHEMA,
           cwd,
           timeoutMs,
+          signal,
         });
-        seat.ok = true;
+        if (signal?.aborted) throw new Error("interrupted");
         seat.ms = ms;
-        const raw = Array.isArray(data?.findings) ? data.findings.slice(0, MAX_FINDINGS_PER_REVIEWER) : [];
+        if (!Array.isArray(data?.findings)) throw new Error("review reply is missing a findings array");
+        if (data.findings.length > MAX_FINDINGS_PER_REVIEWER) throw new Error("review reply exceeds 10 findings");
+        const raw = data.findings;
         seat.reported = raw.length;
         const cleaned = raw.map((f) => cleanFinding(f, seat.id));
         seat.malformed = cleaned.filter((f) => !f).length;
+        if (seat.malformed) throw new Error(`review reply contains ${seat.malformed} malformed findings`);
+        seat.ok = true;
         onProgress(`${seat.id}: ${raw.length} findings (${Math.round(ms / 1000)}s)`);
         return cleaned.filter(Boolean);
       } catch (error) {
@@ -136,7 +142,10 @@ export async function runCouncil({
   const anchored = [];
   const unanchored = [];
   reviews.flat().forEach((f) => {
-    if (isAnchored(files, f.file, f.line)) anchored.push(f);
+    if (isAnchored(files, f.file, f.line)) {
+      f.file = findDiffFile(files, f.file).path;
+      anchored.push(f);
+    }
     else {
       unanchored.push(f);
       seats.find((s) => s.id === f.reviewer).unanchored++;
@@ -150,6 +159,7 @@ export async function runCouncil({
   const voters = seats.filter((s) => s.ok);
   await Promise.all(
     voters.map(async (seat) => {
+      if (signal?.aborted) return;
       const items = needVotes.filter((c) => !c.authors.has(seat.id));
       if (items.length === 0) return;
       onProgress(`${seat.id}: voting on ${items.length} findings`);
@@ -157,21 +167,29 @@ export async function runCouncil({
         id, file, line, severity, title, explanation,
       }));
       try {
+        if (signal?.aborted) return;
         const { data } = await runAgent(seat.agent, {
           instruction: VOTE_INSTRUCTION,
           input: votePrompt(rendered, ballot),
           schema: VOTES_SCHEMA,
           cwd,
           timeoutMs,
+          signal,
         });
+        if (signal?.aborted) throw new Error("interrupted");
+        if (!Array.isArray(data?.votes)) throw new Error("vote reply is missing a votes array");
         const byId = new Map(items.map((c) => [c.id, c]));
         const counted = new Set();
-        for (const v of Array.isArray(data?.votes) ? data.votes : []) {
+        const accepted = [];
+        for (const v of data.votes) {
           const cluster = byId.get(v?.id);
-          if (!cluster || counted.has(v.id) || !["confirm", "reject", "unsure"].includes(v.verdict)) continue;
+          if (!cluster || counted.has(v.id) || !["confirm", "reject", "unsure"].includes(v.verdict) ||
+              typeof v.reason !== "string" || !v.reason.trim()) continue;
           counted.add(v.id);
-          cluster.votes.push({ reviewer: seat.id, verdict: v.verdict, reason: String(v.reason || "").trim() });
+          accepted.push({ cluster, vote: { reviewer: seat.id, verdict: v.verdict, reason: v.reason.trim() } });
         }
+        if (counted.size !== items.length) throw new Error("vote reply does not cover every finding");
+        for (const { cluster, vote } of accepted) cluster.votes.push(vote);
       } catch (error) {
         seat.voteError = error.message;
         onProgress(`${seat.id}: vote failed, ${error.message}`);
@@ -184,7 +202,8 @@ export async function runCouncil({
   return {
     reviewers: seats,
     minVotes,
-    complete: voters.length >= 2,
+    aborted: signal?.aborted === true,
+    complete: !signal?.aborted && voters.length >= minVotes && !voters.some((seat) => seat.voteError),
     stats: diffStats(files),
     confirmed: clusters.filter((c) => c.confirmed).sort(bySeverity),
     unconfirmed: clusters.filter((c) => !c.confirmed).sort(bySeverity),

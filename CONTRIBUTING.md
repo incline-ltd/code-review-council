@@ -18,3 +18,8 @@ Good contributions:
 
 Keep pull requests focused, add a test for behavior changes, and keep agents
 read-only.
+
+Links in contributions must support the change: official documentation, source,
+reproducible evidence or a useful integration example. Disclose affiliation
+when submitting your own project. Unrelated personal links, referral links,
+paid placement and promotional additions are not accepted.

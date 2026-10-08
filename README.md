@@ -6,9 +6,10 @@
 
 **A code review council for the coding agents you already have.**
 
-Claude Code, Codex, and Gemini CLI review your change independently. A finding
-is reported only when a second reviewer agrees with it. No API key: it runs
-the agent CLIs you are already signed in to.
+Claude Code and Codex review your change independently. A finding is confirmed
+only when at least two reviewers support it. The tool uses your existing CLI
+logins and requires no additional API key. Gemini support is disabled in this
+preview while its read-only restrictions are being verified.
 
 [How it works](#how-it-works) · [Quick start](#quick-start) ·
 [Example report](examples/sample-report.md) · [Benchmark](docs/benchmark.md) ·
@@ -23,34 +24,41 @@ agents and keeps only what they agree on.
 
 ## How it works
 
-1. **Review.** Each agent reviews the diff on its own, read-only, with access
-   to the whole repository.
+1. **Review.** Each agent reviews the diff in a separate session, with
+   read-only tools and access to repository context.
 2. **Check.** Findings that cite a file or line outside the diff are dropped.
    This step is code, not a model.
-3. **Vote.** A finding reported by only one agent goes to the others,
-   anonymously, to confirm or reject.
+3. **Vote.** Matching file, line, title and explanation count as independent
+   agreement. Every other finding goes to the remaining reviewers anonymously
+   to confirm, reject or mark unsure.
 4. **Report.** A finding is confirmed when at least two reviewers support it
    and support beats rejection. Everything else is listed as unconfirmed.
 
-There is no "chairman" model rewriting the result. The tally is deterministic.
+The tally is deterministic. Location proximity alone never counts as agreement.
+Differently worded reports of the same bug can remain separate after voting.
+Two sessions of one model are a cross-check, not independent evidence of accuracy.
 
 ## Quick start
 
-Requires Node.js 20+, Git, and at least one of
-[Claude Code](https://code.claude.com/docs/en/overview),
-[Codex](https://github.com/openai/codex), or
-[Gemini CLI](https://github.com/google-gemini/gemini-cli), signed in.
+Requires Node.js 20+, Git, macOS or Linux, and at least one of
+[Claude Code](https://code.claude.com/docs/en/overview) or
+[Codex](https://github.com/openai/codex), signed in. See the tested versions below.
+Use the tested CLI versions below. Missing flags or failed MCP configuration
+checks stop the review; future CLI behavior and configuration changes need
+fresh verification.
 
 ```bash
-git clone https://github.com/incline-ltd/code-review-council.git
+npm install -g git+https://github.com/incline-ltd/code-review-council.git#v0.1.0
 cd your-project
-node ../code-review-council/bin/code-review-council.js --list-agents
-node ../code-review-council/bin/code-review-council.js              # uncommitted changes
-node ../code-review-council/bin/code-review-council.js --base main  # the whole branch
+code-review-council --list-agents
+code-review-council              # uncommitted changes
+code-review-council --base main  # the whole branch
 ```
 
-No dependencies and no build step. With only one agent installed, it runs that
-agent as two independent reviewers. The npm package is not published yet.
+This installs the tagged GitHub release directly. No npm account is needed.
+There are no dependencies and no build step. With one supported agent installed,
+it runs that agent as two separate reviewers. To skip installation, clone this
+repository and run `node <checkout>/bin/code-review-council.js` from your project.
 
 To use it from Claude Code or Codex, copy
 [`skills/code-review-council`](skills/code-review-council/SKILL.md) into your
@@ -71,11 +79,11 @@ skills directory and ask for a council review.
 ### 2. Discount is not bounded
 `cart.js:4`, medium. Found by claude; confirmed by codex.
 
-1 unconfirmed (reported by one reviewer, not confirmed)
+1 unconfirmed (required agreement not reached)
 1 finding was dropped for citing a line outside the diff.
 ```
 
-This is the real report format. The reviewers in the
+This example is shortened for readability. The reviewers in the
 [full example](examples/sample-report.md) are the scripted test agents, so
 the findings are illustrative, not a model's review.
 
@@ -84,16 +92,19 @@ the findings are illustrative, not a model's review.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--base <ref>` | uncommitted changes | Review everything since the merge base with `<ref>` |
-| `--agents <list>` | all installed | `claude`, `codex`, `gemini`; repeat one to run it twice |
-| `--min-votes <n>` | `2` | Reviewers that must support a finding |
+| `--agents <list>` | all supported installed agents | `claude`, `codex`; repeat one to run it twice |
+| `--min-votes <n>` | `2` | Reviewers that must support a finding, minimum 2 |
 | `--format <format>` | `markdown` | `markdown`, `json`, or `sarif` for code-scanning tools |
 | `--out <file>` | stdout | Write the report to a file |
 | `--fail-on <severity>` | off | Exit 1 if a confirmed finding is at least `high`, `medium`, or `low` |
 | `--timeout <seconds>` | `600` | Limit for each agent call |
 | `--max-lines <n>` | `3000` | Refuse larger diffs |
 
-Exit codes: `0` done, `1` `--fail-on` matched, `2` usage error or no reviewer
-finished. Untracked files are not part of `git diff`; stage new files first.
+Exit codes: `0` complete, `1` `--fail-on` matched, `2` usage error or incomplete
+review, including missing quorum or a failed required vote; `130` cancelled.
+Binary files and common generated lockfiles are skipped. A clean report does
+not prove the change is bug-free. Untracked files are not part of `git diff`;
+stage new files first.
 
 ## How it differs
 
@@ -113,21 +124,25 @@ shows. See the [benchmark plan](docs/benchmark.md).
 
 ## Safety
 
-- Agents run read-only. Claude Code gets only its Read, Glob, and Grep tools
-  with `--permission-mode dontAsk`; Codex runs with `--sandbox read-only`;
-  Gemini CLI runs in its read-only plan mode.
-- Claude Code loads only your user settings and no MCP servers from the
-  reviewed repository, so that repository's project hooks and permission rules
-  do not run. Codex and Gemini CLI apply their own project-trust rules; check
-  them before reviewing code you do not trust.
-- Prompts mark the diff as untrusted data. That reduces prompt injection from
-  the code under review but cannot rule it out.
-- Every agent still reads the repository's instruction files, such as
-  `AGENTS.md` and `CLAUDE.md`, as context. For untrusted code, run inside a
-  container.
-- This tool makes no network calls and collects no telemetry. Your agents send
-  the diff, and any files they read, to their providers as in normal use.
-- Usage: each agent runs once to review and at most once to vote.
+- Claude gets only Read, Glob and Grep, with approvals, hooks, MCP tools and
+  session persistence disabled. Repository settings are excluded.
+- Codex runs in a temporary directory, outside the reviewed repository, with
+  a read-only sandbox and no approvals. Hooks, plugins, apps and configured
+  MCP servers are disabled. Configuration checks fail closed.
+- Gemini's headless plan mode can switch to implementation, so its adapter is
+  disabled until permanent restrictions are verified.
+- These restrictions depend on the installed CLI and operating system. They
+  are not a security boundary against every hostile repository. Agents can
+  still read instructions in files; run untrusted code in a container that
+  exposes only the repository and necessary authentication.
+- Local Git configuration is trusted: configured clean filters can execute
+  during diff collection. The wrapper does not sandbox Git itself.
+- This tool makes no provider API calls and collects no telemetry. The agent
+  CLIs send the diff and files they read to their providers. Their existing
+  authentication decides billing: subscription login uses plan allowance,
+  while API/provider credentials may incur charges. Check your CLI login first.
+- Each reviewer makes one review call and at most one vote call. Timeouts
+  terminate the subprocess group on macOS/Linux. Windows is not supported yet.
 
 ## Status
 
@@ -136,16 +151,21 @@ documentation and are tested against a scripted fake agent.
 
 | Agent | Adapter tests | Live run |
 | --- | --- | --- |
-| Claude Code | Passed | Flags checked against 2.1.289 `--help`; review run pending |
-| Codex | Passed | Passed on 0.162.0-alpha.2: two sessions found and confirmed a planted bug in 25s. Vote step not yet exercised live |
-| Gemini CLI | Passed | Pending |
+| Claude Code | Passed | 2.1.289: live review found a planted bug; a separate ballot confirmed it and rejected a false finding |
+| Codex | Passed | 0.162.0-alpha.2: two reviews and two anonymous votes cross-confirmed one planted bug in 34s |
+| Gemini CLI | Disabled safely | Not supported in this release |
+
+Both live checks ran on October 8, 2026, using subscription logins. Fixture
+files remained unchanged. The Codex run returned two differently worded entries
+for the same bug; this is one detected defect, not two. These are synthetic
+functionality checks, not an accuracy benchmark.
 
 Live-run reports are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Related Incline projects
 
 - [Coding Agent Guidelines](https://github.com/incline-ltd/coding-agent-guidelines): short rules for small, verified changes by coding agents.
-- [Agent Cost Guard](https://github.com/incline-ltd/agent-cost-guard): a local hook that stops cloud-cost commands until a person approves.
+- [Agent Cost Guard](https://github.com/incline-ltd/agent-cost-guard): a local hook that checks supported cloud-cost commands for approval.
 - [Awesome Agentic Engineering](https://github.com/incline-ltd/awesome-agentic-engineering): a reviewed guide to coding-agent tools.
 
 ## License

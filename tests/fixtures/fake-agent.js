@@ -9,6 +9,18 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
+if (argv[0] === "mcp") {
+  if (process.env.FAKE_MCP_SLEEP) await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_MCP_SLEEP)));
+  const servers = JSON.parse(process.env.FAKE_MCP_SERVERS || "[]");
+  for (const server of servers) {
+    if (!process.env.FAKE_MCP_LOCKED && argv.some((arg) => arg.startsWith("mcp_servers={") && arg.includes(`${JSON.stringify(server.name)}={enabled=false}`))) server.enabled = false;
+  }
+  if (process.env.FAKE_MCP_LOG) {
+    appendFileSync(process.env.FAKE_MCP_LOG, JSON.stringify({ argv, cwd: process.cwd() }) + "\n");
+  }
+  process.stdout.write(process.env.FAKE_MCP_OUTPUT ?? JSON.stringify(servers));
+  process.exit(0);
+}
 const agent = argv[0] === "exec" ? "codex" : argv.includes("--approval-mode") ? "gemini" : "claude";
 const key = agent.toUpperCase();
 
@@ -44,7 +56,7 @@ if (voting) {
 if (agent === "claude") {
   process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "", structured_output: reply }));
 } else if (agent === "codex") {
-  writeFileSync(argv[argv.indexOf("-o") + 1], JSON.stringify(reply));
+  writeFileSync(argv[argv.indexOf("-o") + 1], process.env.FAKE_CODEX_REPLY_BYTES ? "x".repeat(Number(process.env.FAKE_CODEX_REPLY_BYTES)) : JSON.stringify(reply));
   process.stdout.write("done\n");
 } else {
   process.stdout.write(JSON.stringify({ response: "```json\n" + JSON.stringify(reply) + "\n```", stats: {} }));

@@ -11,8 +11,20 @@ function capitalize(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function markdown(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/([\\`*_{}\[\]()#!|~])/g, "\\$1");
+}
+
 function oneLine(text) {
-  return String(text).replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+  return markdown(String(text).replace(/\s+/g, " ").trim());
+}
+
+function location(c) {
+  const text = `${c.file}:${c.line}`.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+  const fence = "`".repeat(Math.max(0, ...Array.from(text.matchAll(/`+/g), (match) => match[0].length)) + 1);
+  const pad = /^[` ]|[` ]$/.test(text) ? " " : "";
+  return `${fence}${pad}${text.replace(/\|/g, "\\|")}${pad}${fence}`;
 }
 
 function support(c) {
@@ -34,7 +46,7 @@ export function toMarkdown(result) {
   out.push(`## Code review council: ${plural(count, "confirmed finding")}`, "");
 
   const seats = reviewers
-    .map((r) => (r.ok ? r.id : `${r.id} (failed: ${oneLine(r.error)})`))
+    .map((r) => (r.ok ? `${r.id}${r.voteError ? ` (vote failed: ${oneLine(r.voteError)})` : ""}` : `${r.id} (failed: ${oneLine(r.error)})`))
     .join(", ");
   out.push(
     `Reviewers: ${seats}. Diff: ${plural(stats.files, "file")}, +${stats.additions} -${stats.deletions}. ` +
@@ -42,28 +54,28 @@ export function toMarkdown(result) {
     "",
   );
   if (!result.complete) {
-    out.push("> Fewer than two reviewers finished, so nothing could be cross-confirmed.", "");
+    out.push(`> Review incomplete: fewer than ${result.minVotes} reviewers finished or a required vote failed.`, "");
   }
 
   if (count) {
     out.push("| # | Severity | Location | Finding |", "| --- | --- | --- | --- |");
     confirmed.forEach((c, i) => {
-      out.push(`| ${i + 1} | ${c.severity} | \`${c.file}:${c.line}\` | ${oneLine(c.title)} |`);
+      out.push(`| ${i + 1} | ${c.severity} | ${location(c)} | ${oneLine(c.title)} |`);
     });
     out.push("");
     confirmed.forEach((c, i) => {
       out.push(`### ${i + 1}. ${oneLine(c.title)}`, "");
-      out.push(`\`${c.file}:${c.line}\`, ${c.severity}. ${capitalize(support(c))}.`, "");
-      if (c.explanation) out.push(c.explanation, "");
+      out.push(`${location(c)}, ${c.severity}. ${capitalize(support(c))}.`, "");
+      if (c.explanation) out.push(markdown(c.explanation), "");
     });
   } else {
-    out.push("No finding was confirmed by a second reviewer.", "");
+    out.push(`No finding reached the required support of ${result.minVotes} reviewers.`, "");
   }
 
   if (unconfirmed.length) {
-    out.push(`<details><summary>${unconfirmed.length} unconfirmed (reported by one reviewer, not confirmed)</summary>`, "");
+    out.push(`<details><summary>${unconfirmed.length} unconfirmed (required agreement not reached)</summary>`, "");
     for (const c of unconfirmed) {
-      out.push(`- \`${c.file}:${c.line}\` ${c.severity}: ${oneLine(c.title)} (${support(c)})`);
+      out.push(`- ${location(c)} ${c.severity}: ${oneLine(c.title)} (${support(c)})`);
     }
     out.push("", "</details>", "");
   }
@@ -109,12 +121,13 @@ export function toSarif(result, version) {
               rules: [{ id: "confirmed-finding", shortDescription: { text: "Finding confirmed by the review council" } }],
             },
           },
+          invocations: [{ executionSuccessful: result.complete }],
           results: result.confirmed.map((c) => ({
             ruleId: "confirmed-finding",
             level: LEVELS[c.severity],
             message: { text: `${c.title}\n\n${c.explanation}\n\n${capitalize(support(c))}.` },
             locations: [
-              { physicalLocation: { artifactLocation: { uri: c.file }, region: { startLine: c.line } } },
+              { physicalLocation: { artifactLocation: { uri: c.file.split("/").map(encodeURIComponent).join("/") }, region: { startLine: c.line } } },
             ],
           })),
         },

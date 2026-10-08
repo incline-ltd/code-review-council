@@ -1,8 +1,8 @@
 # Example report
 
-This is real output from `code-review-council` run on a small change to
-`cart.js`. The two reviewers are the scripted test agents in
-`tests/fixtures/`, not Claude or Codex, so the findings are illustrative.
+This is an illustrative report for a small change to `cart.js`. The findings
+come from scripted test agents, not a live Claude or Codex review. Formatting
+has been shortened for readability.
 It shows the report format and how confirmation works:
 
 - the loop bug was reported by both reviewers independently;
@@ -46,7 +46,7 @@ Reviewers: claude, codex. Diff: 1 file, +2 -2. Time: 0s. A finding needs 2 revie
 
 A discount above 100 or below 0 produces a negative total or a surcharge. Nothing in the change validates it.
 
-<details><summary>1 unconfirmed (reported by one reviewer, not confirmed)</summary>
+<details><summary>1 unconfirmed (required agreement not reached)</summary>
 
 - `cart.js:1` low: Rename total to computeTotal (found by codex; rejected by claude)
 

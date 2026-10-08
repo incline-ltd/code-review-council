@@ -21,7 +21,7 @@ Options:
   --base <ref>          Review everything since the merge base with <ref>
                         (default: uncommitted changes against HEAD)
   --agents <list>       Comma-separated: ${Object.keys(AGENTS).join(",")} (default: all installed)
-  --min-votes <n>       Reviewers that must agree on a finding (default: 2)
+  --min-votes <n>       Reviewers that must agree (minimum and default: 2)
   --format <format>     markdown, json, or sarif (default: markdown)
   --out <file>          Write the report to a file instead of stdout
   --fail-on <severity>  Exit 1 if a confirmed finding is at least high, medium, or low
@@ -31,7 +31,7 @@ Options:
   -h, --help            Show this help
   -v, --version         Show the version
 
-Exit codes: 0 done, 1 --fail-on matched, 2 usage error or no reviewer finished.
+Exit codes: 0 done, 1 --fail-on matched, 2 usage error or incomplete review, 130 cancelled.
 `;
 
 function fail(message) {
@@ -41,7 +41,7 @@ function fail(message) {
 
 function positiveInt(value, name) {
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1) fail(`--${name} must be a positive integer`);
+  if (!Number.isSafeInteger(n) || n < 1) fail(`--${name} must be a positive safe integer`);
   return n;
 }
 
@@ -75,31 +75,34 @@ if (args.version) {
   process.exit(0);
 }
 
-const installed = Object.keys(AGENTS).filter((name) => resolveAgent(name));
+const installed = Object.keys(AGENTS).filter((name) => !AGENTS[name].unsupported && resolveAgent(name));
 
 if (args["list-agents"]) {
   for (const name of Object.keys(AGENTS)) {
-    process.stdout.write(`${name.padEnd(7)} ${resolveAgent(name) || "not found"}\n`);
+    process.stdout.write(`${name.padEnd(7)} ${AGENTS[name].unsupported || resolveAgent(name) || "not found"}\n`);
   }
   process.exit(0);
 }
 
 const formats = { markdown: toMarkdown, json: toJson, sarif: (r) => toSarif(r, version) };
-if (!formats[args.format]) fail(`unknown --format ${args.format}`);
+if (!Object.hasOwn(formats, args.format)) fail(`unknown --format ${args.format}`);
 if (args["fail-on"] && !SEVERITIES.includes(args["fail-on"])) fail(`--fail-on must be one of ${SEVERITIES.join(", ")}`);
 const minVotes = positiveInt(args["min-votes"], "min-votes");
+if (minVotes < 2) fail("--min-votes must be at least 2");
 const timeoutMs = positiveInt(args.timeout, "timeout") * 1000;
+if (timeoutMs > 2_147_483_647) fail("--timeout must be at most 2147483 seconds");
 const maxLines = positiveInt(args["max-lines"], "max-lines");
 
 let agents;
 if (args.agents) {
   agents = args.agents.split(",").map((a) => a.trim()).filter(Boolean);
   for (const name of agents) {
-    if (!AGENTS[name]) fail(`unknown agent "${name}"`);
+    if (!Object.hasOwn(AGENTS, name)) fail(`unknown agent "${name}"`);
+    if (AGENTS[name].unsupported) fail(`${name}: ${AGENTS[name].unsupported}`);
     if (!resolveAgent(name)) fail(`${name} is not installed or not on PATH`);
   }
 } else if (installed.length === 0) {
-  fail("no agent CLI found. Install Claude Code, Codex, or Gemini CLI first (see --list-agents)");
+  fail("no supported agent CLI found. Install Claude Code or Codex first (see --list-agents)");
 } else if (installed.length === 1) {
   // One agent alone cannot cross-check; two separate sessions of it can.
   agents = [installed[0], installed[0]];
@@ -120,29 +123,49 @@ try {
 
 const stats = diffStats(diff.files);
 if (stats.files === 0) {
-  process.stdout.write("No changes to review.\n");
+  const empty = { reviewers: [], minVotes, complete: true, stats, confirmed: [], unconfirmed: [], unanchored: [], ms: 0, noChanges: true };
+  writeReport(args.format === "markdown" ? "No changes to review.\n" : formats[args.format](empty));
   process.exit(0);
 }
 if (stats.additions + stats.deletions > maxLines) {
   fail(`the diff has ${stats.additions + stats.deletions} changed lines (limit ${maxLines}). Review a smaller range or raise --max-lines`);
 }
 
+const controller = new AbortController();
+const cancel = () => controller.abort();
+process.once("SIGINT", cancel);
+process.once("SIGTERM", cancel);
 const result = await runCouncil({
   files: diff.files,
   reviewers: seatReviewers(agents),
   minVotes,
   cwd: diff.root,
   timeoutMs,
+  signal: controller.signal,
   onProgress: (message) => process.stderr.write(`  ${message}\n`),
 });
+process.removeListener("SIGINT", cancel);
+process.removeListener("SIGTERM", cancel);
 
-const report = formats[args.format](result);
-if (args.out) writeFileSync(args.out, report.endsWith("\n") ? report : report + "\n");
-else process.stdout.write(report.endsWith("\n") ? report : report + "\n");
+function writeReport(report) {
+  const text = report.endsWith("\n") ? report : report + "\n";
+  try {
+    if (args.out) writeFileSync(args.out, text);
+    else process.stdout.write(text);
+  } catch (error) {
+    fail(`could not write the report: ${error.code || "write failed"}`);
+  }
+}
 
-if (!result.reviewers.some((r) => r.ok)) process.exit(2);
-if (!result.complete) process.stderr.write("Warning: fewer than two reviewers finished; nothing was cross-confirmed.\n");
-if (args["fail-on"]) {
+writeReport(formats[args.format](result));
+
+if (result.aborted) {
+  process.stderr.write("Review cancelled.\n");
+  process.exitCode = 130;
+} else if (!result.complete) {
+  process.stderr.write(`Review incomplete: fewer than ${minVotes} reviewers finished or a required vote failed.\n`);
+  process.exitCode = 2;
+} else if (args["fail-on"]) {
   const limit = SEVERITIES.indexOf(args["fail-on"]);
-  if (result.confirmed.some((c) => SEVERITIES.indexOf(c.severity) <= limit)) process.exit(1);
+  if (result.confirmed.some((c) => SEVERITIES.indexOf(c.severity) <= limit)) process.exitCode = 1;
 }

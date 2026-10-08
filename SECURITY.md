@@ -2,12 +2,13 @@
 
 ## Supported version
 
-Until the first release, only the latest commit on `main` is supported.
+The latest 0.1.x preview and the latest commit on `main` receive fixes.
 
 ## Report a vulnerability
 
-Use GitHub private vulnerability reporting when it is available for this
-repository. Do not open a public issue for a security problem.
+Use [GitHub private vulnerability reporting](https://github.com/incline-ltd/code-review-council/security/advisories/new)
+to report a security problem. Do not include exploit details or private code
+in a public issue.
 
 Useful reports include:
 
@@ -20,9 +21,17 @@ Useful reports include:
 
 ## Known limits
 
-The diff is marked as untrusted in every prompt, but prompt injection from the
-code under review cannot be fully prevented. Claude Code is started with only
-read-only tools, user-level settings, and no repository MCP servers, so the
-reviewed repository's project hooks do not run. Codex and Gemini CLI follow
-their own project-trust rules. Agents still read repository instruction files
-as context. For untrusted code, run the tool in a container.
+The diff is marked as untrusted in every prompt, but prompt injection cannot
+be fully prevented. Claude uses read-only tools with hooks and MCP disabled.
+Codex uses a read-only sandbox from an isolated working directory, with
+external tools and executable customizations disabled. Gemini is disabled
+because headless plan mode alone does not prevent implementation.
+
+These controls depend on the installed CLI and host. They do not establish
+complete isolation from private files or provider-side behavior. Agents can
+still read repository instructions as context. Review untrusted code in a
+container with only the required files and authentication available.
+
+The local Git configuration is also trusted. Git clean filters can execute
+while collecting a working-tree diff. The wrapper disables external diff
+commands, text conversion and fsmonitor, but it does not sandbox Git itself.

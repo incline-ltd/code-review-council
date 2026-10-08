@@ -21,7 +21,12 @@ const SKIPPED_FILES = new Set([
 ]);
 
 async function git(cwd, args) {
-  const { stdout } = await run("git", ["-c", "core.quotePath=false", ...args], {
+  const { stdout } = await run("git", [
+    "-c", "core.quotePath=false",
+    "-c", "core.fsmonitor=false",
+    "-c", "diff.suppressBlankEmpty=false",
+    ...args,
+  ], {
     cwd,
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -37,12 +42,34 @@ export async function collectDiff({ cwd, base }) {
   } else {
     await git(root, ["rev-parse", "--verify", "HEAD"]);
   }
-  const text = await git(root, ["diff", "--no-color", "--no-ext-diff", "-U3", from]);
+  const text = await git(root, [
+    "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+    "--src-prefix=a/", "--dst-prefix=b/", "-U3", from,
+  ]);
   return { root, from, files: parseDiff(text) };
 }
 
 function unquote(path) {
-  return path.startsWith('"') && path.endsWith('"') ? path.slice(1, -1) : path;
+  if (!path.startsWith('"') || !path.endsWith('"')) return path;
+  const escapes = { a: "\x07", b: "\b", t: "\t", n: "\n", v: "\v", f: "\f", r: "\r", '"': '"', "\\": "\\" };
+  const bytes = [];
+  const inner = path.slice(1, -1);
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] === "\\") {
+      const octal = inner.slice(i + 1).match(/^[0-7]{1,3}/)?.[0];
+      if (octal) {
+        bytes.push(Number.parseInt(octal, 8));
+        i += octal.length;
+      } else {
+        bytes.push(...Buffer.from(escapes[inner[++i]] ?? inner[i]));
+      }
+    } else {
+      const character = String.fromCodePoint(inner.codePointAt(i));
+      bytes.push(...Buffer.from(character));
+      i += character.length - 1;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
 }
 
 function stripPrefix(path) {
@@ -78,7 +105,10 @@ export function parseDiff(text) {
     if (!hunk) {
       if (line.startsWith("new file mode")) file.status = "added";
       else if (line.startsWith("deleted file mode")) file.status = "deleted";
-      else if (line.startsWith("rename from ")) file.status = "renamed";
+      else if (line.startsWith("rename from ")) {
+        file.status = "renamed";
+        file.oldPath = unquote(line.slice(12));
+      } else if (line.startsWith("rename to ")) file.path = unquote(line.slice(10));
       else if (line.startsWith("Binary files ")) file.binary = true;
       else if (line.startsWith("--- ") && line !== "--- /dev/null") {
         file.oldPath = stripPrefix(unquote(line.slice(4).replace(/\t$/, "")));
@@ -104,7 +134,11 @@ export function parseDiff(text) {
     }
     if (!hunk) continue;
 
-    const type = line[0];
+    // Also accept diffs supplied directly with suppressed blank context markers.
+    // Hunk counts keep a trailing newline from becoming an extra context line.
+    const blankContext = line === "" && oldLine < hunk.oldStart + hunk.oldLines &&
+      newLine < hunk.newStart + hunk.newLines;
+    const type = blankContext ? " " : line[0];
     if (type === "+") {
       hunk.lines.push({ type, text: line.slice(1), newLine: newLine++ });
       file.additions++;
@@ -128,16 +162,18 @@ export function diffStats(files) {
   };
 }
 
-/** Render the diff with new-file line numbers so reviewers can cite exact lines. */
+/** Render new-file line numbers, or old-file line numbers for a deleted file. */
 export function renderDiff(files) {
   const out = [];
   for (const file of files) {
-    const label = file.status === "renamed" ? `${file.oldPath} -> ${file.path}` : file.path;
-    out.push(`### ${label} (${file.status})`);
+    out.push(`### ${file.path} (${file.status})`);
+    if (file.status === "renamed") out.push(`Renamed from: ${file.oldPath}`);
+    if (file.status === "deleted") out.push("Line numbers refer to the deleted file before this change.");
     for (const hunk of file.hunks) {
       out.push(`@@ ${hunk.context}`.trimEnd());
       for (const l of hunk.lines) {
-        const number = l.newLine === undefined ? "" : String(l.newLine);
+        const anchor = file.status === "deleted" ? l.oldLine : l.newLine;
+        const number = anchor === undefined ? "" : String(anchor);
         out.push(`${l.type === " " ? " " : l.type} ${number.padStart(6)} | ${l.text}`);
       }
     }
@@ -147,15 +183,19 @@ export function renderDiff(files) {
 }
 
 export function normalizePath(path) {
-  return String(path).trim().replace(/^\.\//, "").replace(/^[ab]\//, "");
+  return String(path).replace(/^\.\//, "");
+}
+
+export function findDiffFile(files, path) {
+  const normalized = normalizePath(path);
+  return files.find((file) => file.path === normalized) ??
+    files.find((file) => file.path === normalized.replace(/^[ab]\//, ""));
 }
 
 /** A finding is anchored when it cites a file in the diff and a line inside one of its hunks. */
 export function isAnchored(files, path, line) {
-  const file = files.find((f) => f.path === normalizePath(path));
-  if (!file || !Number.isInteger(line)) return false;
-  return file.hunks.some((h) => {
-    const last = h.newStart + Math.max(h.newLines, 1) - 1;
-    return line >= h.newStart && line <= last;
-  });
+  const file = findDiffFile(files, path);
+  if (!file || !Number.isInteger(line) || line < 1) return false;
+  return file.hunks.some((h) => h.lines.some((entry) =>
+    (file.status === "deleted" ? entry.oldLine : entry.newLine) === line));
 }

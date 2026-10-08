@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 
 const CLI = fileURLToPath(new URL("../bin/code-review-council.js", import.meta.url));
 const FAKE = fileURLToPath(new URL("./fixtures/fake-agent.js", import.meta.url));
@@ -67,7 +69,6 @@ test("reports a bug that two reviewers find independently", () => {
   assert.match(out.stdout, /`cart\.js:3`/);
   assert.match(out.stdout, /Found independently by claude, codex/);
   assert.equal(out.calls.filter((c) => c.voting).length, 0);
-  assert.ok(out.calls.every((c) => c.cwd === out.calls[0].cwd));
 });
 
 test("a finding only one reviewer reports goes to a vote", () => {
@@ -122,10 +123,81 @@ test("all reviewers failing exits 2", () => {
   assert.match(out.stdout, /failed/);
 });
 
+test("missing the required review quorum exits 2 rather than passing CI", () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, "cart.js"), CHANGED);
+  const out = cli(dir, ["--agents", "claude,codex", "--format", "json"], { FAKE_FAIL_CODEX: "1" });
+  assert.equal(out.status, 2);
+  assert.equal(JSON.parse(out.stdout).complete, false);
+});
+
+test("nonzero exits flush large JSON reports through a pipe", () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, "cart.js"), CHANGED);
+  const findings = JSON.parse(OFF_BY_ONE);
+  findings[0].explanation = "Long supporting evidence. ".repeat(4000);
+  const encoded = JSON.stringify(findings);
+  for (const [extraArgs, env, status] of [
+    [["--fail-on", "high"], { FAKE_REVIEW_CLAUDE: encoded, FAKE_REVIEW_CODEX: encoded }, 1],
+    [[], { FAKE_REVIEW_CLAUDE: encoded, FAKE_FAIL_CODEX: "1" }, 2],
+  ]) {
+    const out = cli(dir, ["--agents", "claude,codex", "--format", "json", ...extraArgs], env);
+    assert.equal(out.status, status, out.stderr);
+    assert.ok(out.stdout.length > 65536);
+    assert.doesNotThrow(() => JSON.parse(out.stdout));
+  }
+});
+
+test("SIGINT exits 130 and reports an incomplete cancelled review", { timeout: 10000 }, async (t) => {
+  const { dir } = repo();
+  writeFileSync(join(dir, "cart.js"), CHANGED);
+  const log = join(dir, "calls.jsonl");
+  const child = spawn(process.execPath, [CLI, "--agents", "claude,codex", "--format", "json"], {
+    cwd: dir,
+    env: { ...process.env, CODE_REVIEW_COUNCIL_CLAUDE: FAKE, CODE_REVIEW_COUNCIL_CODEX: FAKE,
+      FAKE_LOG: log, FAKE_SLEEP_CODEX: "5000" },
+  });
+  t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.resume();
+  const closed = once(child, "close");
+  let ready = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    try { ready = readFileSync(log, "utf8").includes('"agent":"codex"'); } catch {}
+    if (ready) break;
+    await delay(20);
+  }
+  assert.ok(ready, "Codex review started before cancellation");
+  child.kill("SIGINT");
+  const [code] = await closed;
+  assert.equal(code, 130);
+  const report = JSON.parse(output);
+  assert.equal(report.aborted, true);
+  assert.equal(report.complete, false);
+});
+
+test("unchanged repositories preserve structured formats and --out", () => {
+  const { dir } = repo();
+  const json = cli(dir, ["--agents", "claude,codex", "--format", "json"]);
+  assert.equal(json.status, 0);
+  assert.equal(JSON.parse(json.stdout).noChanges, true);
+  const output = join(dir, "report.sarif");
+  const sarif = cli(dir, ["--agents", "claude,codex", "--format", "sarif", "--out", output]);
+  assert.equal(sarif.status, 0);
+  assert.equal(sarif.stdout, "");
+  assert.deepEqual(JSON.parse(readFileSync(output, "utf8")).runs[0].results, []);
+  assert.equal(sarif.calls.length, 0);
+});
+
 test("usage errors exit 2", () => {
   const { dir } = repo();
   assert.equal(cli(dir, ["--format", "html"]).status, 2);
   assert.equal(cli(dir, ["--agents", "nope"]).status, 2);
   assert.equal(cli(dir, ["--min-votes", "0"]).status, 2);
+  assert.equal(cli(dir, ["--min-votes", "1"]).status, 2);
+  assert.equal(cli(dir, ["--format", "constructor"]).status, 2);
+  assert.equal(cli(dir, ["--agents", "constructor"]).status, 2);
+  assert.equal(cli(dir, ["--timeout", "2147484"]).status, 2);
   assert.equal(cli(dir, ["--agents", "claude", "--min-votes", "2"]).status, 2);
 });

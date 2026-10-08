@@ -10,6 +10,7 @@ export const FINDINGS_SCHEMA = {
   properties: {
     findings: {
       type: "array",
+      maxItems: 10,
       items: {
         type: "object",
         additionalProperties: false,
@@ -65,7 +66,8 @@ Rules:
 - Report only problems in the changed code. No style, naming, or formatting notes.
 - Use the file path exactly as shown after "###" and a line number from the
   left-hand column of the diff. For a removed line, cite the nearest numbered
-  line in the same hunk.
+  line in the same hunk. For a deleted file, use its displayed old-file line
+  numbers. Never cite line zero.
 - You may read other files in the repository for context. Do not modify
   anything and do not run commands that change state.
 - Severity: high = likely bug, security hole, or data loss in normal use;
