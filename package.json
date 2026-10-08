@@ -1,0 +1,51 @@
+{
+  "name": "@ashishkaloge/code-review-council",
+  "version": "0.1.0",
+  "description": "Cross-check code reviews with Claude Code and Codex using existing CLI logins. Deterministic diff anchoring and anonymous votes, with Markdown, JSON and SARIF reports.",
+  "type": "module",
+  "bin": {
+    "code-review-council": "bin/code-review-council.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "docs/benchmark.md",
+    "examples/sample-report.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "code-review",
+    "llm-council",
+    "claude-code",
+    "codex",
+    "coding-agents",
+    "ai-code-review",
+    "sarif"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/incline-ltd/code-review-council.git"
+  },
+  "homepage": "https://github.com/incline-ltd/code-review-council#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "bugs": {
+    "url": "https://github.com/incline-ltd/code-review-council/issues"
+  }
+}
