@@ -1,0 +1,41 @@
+{
+  "name": "@ashishkaloge/code-review-council",
+  "version": "0.1.0",
+  "description": "A code review council for the coding agents you already have. Claude Code, Codex, and Gemini CLI review independently; only cross-confirmed findings are reported. No API key.",
+  "type": "module",
+  "bin": {
+    "code-review-council": "bin/code-review-council.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "code-review",
+    "llm-council",
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "coding-agents",
+    "ai-code-review",
+    "sarif"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/incline-ltd/code-review-council.git"
+  },
+  "homepage": "https://github.com/incline-ltd/code-review-council#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}
